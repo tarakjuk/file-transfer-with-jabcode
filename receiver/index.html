@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>JAB 광학 수신기</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23111'/%3E%3Crect x='2' y='2' width='5' height='5' fill='%2300c2ff'/%3E%3Crect x='9' y='2' width='5' height='5' fill='%23ff3d71'/%3E%3Crect x='2' y='9' width='5' height='5' fill='%23ffd23f'/%3E%3Crect x='9' y='9' width='5' height='5' fill='%2335d07f'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --line: #2a2f3a;
+    --text: #e8eaf0; --muted: #9aa3b2; --accent: #3b82f6; --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444;
+    --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; min-height: 100%; overflow-x: hidden; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: calc(10px + var(--safe-t)) 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .stage { position: relative; flex: 1 1 auto; min-height: 44vh; background: #000; overflow: hidden; }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #guide { position: absolute; border: 1.5px dashed rgba(255,255,255,.55); border-radius: 10px;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,.35); pointer-events: none; transition: border-color .12s; display: none; }
+  #ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px; text-align: center; color: var(--muted); }
+  .placeholder b { color: var(--text); font-size: 18px; }
+  .hud { position: absolute; left: 10px; top: 10px; right: 10px; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
+  .chip { background: rgba(15,17,21,.72); border: 1px solid rgba(255,255,255,.12); padding: 3px 9px; border-radius: 999px;
+    font-size: 12px; color: #dfe3ea; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  .panel { background: var(--panel); border-top: 1px solid var(--line); padding: 14px 16px calc(14px + var(--safe-b)); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button, .btn { appearance: none; border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 10px;
+    padding: 11px 14px; font: inherit; font-weight: 600; cursor: pointer; min-height: 44px; display: inline-flex; align-items: center;
+    justify-content: center; gap: 6px; text-decoration: none; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; flex: 1 1 160px; }
+  button.danger { background: #3a1d22; border-color: #5b2730; }
+  button:disabled { opacity: .45; }
+  select, input[type=range] { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px; max-width: 100%; }
+  input[type=range] { padding: 0; accent-color: var(--accent); flex: 1; min-width: 120px; }
+  .progress { height: 12px; background: var(--panel2); border-radius: 999px; overflow: hidden; border: 1px solid var(--line); margin: 12px 0 6px; }
+  .progress > div { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #22c55e); transition: width .2s; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 6px 12px; font-size: 13px; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .status { margin-top: 8px; font-size: 13px; color: var(--muted); min-height: 1.4em; }
+  .status.err { color: var(--bad); }
+  details { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; background: var(--panel2); }
+  summary { cursor: pointer; padding: 10px 0; color: var(--muted); font-size: 14px; }
+  details .row { padding-bottom: 10px; }
+  details label { font-size: 13px; color: var(--muted); min-width: 76px; }
+  .files { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .file { display: flex; gap: 10px; align-items: center; background: #13261b; border: 1px solid #1f5133; border-radius: 12px; padding: 10px 12px; }
+  .file .meta { flex: 1; min-width: 0; }
+  .file .name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .info { font-size: 12px; color: var(--muted); }
+  .file .btn { padding: 8px 12px; min-height: 38px; }
+  .notice { background: #2a2312; border: 1px solid #5c4813; color: #f8e3a3; padding: 10px 12px; border-radius: 10px; font-size: 13px; margin-bottom: 10px; display: none; }
+  .notice a { color: #fff; }
+  @media (min-width: 900px) and (orientation: landscape) {
+    body { flex-direction: row; flex-wrap: wrap; }
+    header { width: 100%; }
+    .stage { flex: 1 1 60%; min-height: calc(100vh - 56px); }
+    .panel { flex: 0 0 400px; border-top: 0; border-left: 1px solid var(--line); max-height: calc(100vh - 56px); overflow: auto; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>JAB 광학 수신기</h1>
+    <div class="sub">화면의 JAB Code를 카메라로 읽어 파일을 받습니다</div>
+  </div>
+  <div class="sub" id="ver"></div>
+</header>
+
+<div class="stage" id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <div id="guide"></div>
+  <canvas id="ov"></canvas>
+  <div class="placeholder" id="ph">
+    <b>카메라로 수신 준비</b>
+    <div>송신 PC 화면의 JAB Code를 비추세요. 인식되면 코드 위에 추적 박스가 표시됩니다.<br>프레임을 일부 놓쳐도 파운틴 코드로 자동 복구됩니다.</div>
+  </div>
+  <div class="hud" id="hud" style="display:none">
+    <span class="chip" id="chipFps">분석 0 fps</span>
+    <span class="chip" id="chipHit">인식 0%</span>
+    <span class="chip" id="chipRes">-</span>
+    <span class="chip" id="chipRoi">탐색 중</span>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="notice" id="notice"></div>
+  <div class="row">
+    <button class="primary" id="btnStart">📷 카메라로 수신 시작</button>
+    <button id="btnStop" class="danger" disabled>정지</button>
+    <label class="btn" for="fileInput" title="미리 촬영한 동영상/사진에서 읽기">🎞️ 동영상/사진</label>
+    <input type="file" id="fileInput" accept="video/*,image/*" multiple hidden>
+  </div>
+
+  <div class="progress"><div id="bar"></div></div>
+  <div class="stats">
+    <div>진행 <b id="stProg">0%</b></div>
+    <div>블록 <b id="stRank">0 / -</b></div>
+    <div>유효 프레임 <b id="stPk">0</b></div>
+    <div>남은 시간 <b id="stEta">-</b></div>
+    <div>전송률 <b id="stRate">-</b></div>
+    <div>전송 크기 <b id="stSize">-</b></div>
+    <div>세션 <b id="stSess">-</b></div>
+  </div>
+  <div class="status" id="status">대기 중</div>
+
+  <div class="files" id="files"></div>
+
+  <details id="opts">
+    <summary>카메라 / 분석 설정</summary>
+    <div class="row"><label for="selCam">카메라</label><select id="selCam" style="flex:1"><option value="">후면 카메라 (기본)</option></select></div>
+    <div class="row"><label for="selRes">해상도</label>
+      <select id="selRes" style="flex:1">
+        <option value="1920x1080" selected>1080p (권장)</option>
+        <option value="1280x720">720p (저사양 기기)</option>
+        <option value="3840x2160">4K (고사양 기기)</option>
+      </select></div>
+    <div class="row"><label for="rngGuide">인식 영역</label><input type="range" id="rngGuide" min="40" max="100" value="100"><span id="lblGuide" class="sub">전체 화면</span></div>
+    <div class="row" id="rowZoom" style="display:none"><label for="rngZoom">줌</label><input type="range" id="rngZoom" min="1" max="1" step="0.1" value="1"><span id="lblZoom" class="sub">1.0×</span></div>
+    <div class="row"><label for="selWorkers">분석 스레드</label><select id="selWorkers" style="flex:1"></select></div>
+    <div class="row"><label for="selMax">분석 크기</label>
+      <select id="selMax" style="flex:1">
+        <option value="1400">최대 1400px (정확)</option>
+        <option value="1000" selected>최대 1000px (균형)</option>
+        <option value="720">최대 720px (빠름)</option>
+      </select></div>
+    <div class="row"><button id="btnReset" style="flex:1">수신 상태 초기화</button></div>
+  </details>
+</div>
+
+<canvas id="cap" style="display:none"></canvas>
+<script src="jabcore.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,561 @@
+================================================================================
+ JAB Code 광학 파일 전송기 — 인수인계 문서 (Claude → Claude)
+ 작성: 2026-10-01 (Asia/Seoul)  /  프로젝트 위치: C:\play_claude\jab_transfer
+================================================================================
+
+이 문서는 다음 세션의 Claude가 맥락 없이 바로 이어서 작업할 수 있도록, 지금까지의
+요구사항·설계 결정·구현 세부·검증 결과·배포 상태·환경 제약·남은 일을 모두 적은 것이다.
+사용자는 한국어로 소통하며, 답변은 간결한 것을 선호한다.
+
+--------------------------------------------------------------------------------
+0. 한눈에 보기
+--------------------------------------------------------------------------------
+- 목적: PC 화면에 JAB Code(컬러 2D 코드)를 연속 표시 → 스마트폰 카메라로 촬영해 파일 수신.
+- 송신: Python + PySide6 GUI (C:\play_claude\jab_transfer\sender). 제공된 libjabcode.dll 사용.
+- 수신: 정적 웹사이트 (receiver 폴더). libjabcode를 WebAssembly로 빌드해 브라우저에서 디코드.
+- 배포: VibeDrop → https://bk76xykb.vibedrop.site  (slug: bk76xykb, unlisted, v3.0 = JAB 다중 심볼 2×2, 2026-10-02 배포, 30일 미방문 시 만료)
+- 현재 기본 동작: 송신이 JAB 다중 심볼(마스터+슬레이브 3, 2×2 도킹, 8색 v8 ECC5)을 5fps로 표시, 프레임당 패킷 1개(1440B),
+  수신은 libjabcode 한 번의 디코드로 4칸을 읽음 (19장). 15장의 '독립 심볼 4개 + 비콘' 방식은 v3.0 에서 제거됨.
+  ※ 이전 주소 9bh8ppse(v1.0)는 클라우드 키 소실로 갱신 불가 — 14장 참고.
+- 오류 내성: 파운틴 코드(LT 계열) + 수신측 온라인 GF(2) 가우스 소거 → 아무 프레임이든 약 K+1~2장이면 복원.
+- 상태: 클라우드 환경에서 종단간 테스트 모두 통과. 실제 Windows GUI는 사용자가 venv까지 설치함
+  (Python 3.14.4, PySide6 6.11.2). 실제 휴대폰(특히 iPhone Safari) 테스트는 아직 미확인.
+
+--------------------------------------------------------------------------------
+1. 사용자 원 요구사항 (원문 요지)
+--------------------------------------------------------------------------------
+"jab code를 이용한 광학 파일 송수신 프로그램 제작. play_claude 폴더의 jabcodeReader.exe,
+ jabcodeWriter.exe, libjabcode.dll 자유롭게 이용 가능."
+송신 측:
+  1. Python으로 제작
+  2. PySide6 GUI 제공
+  3. 완성된 JAB code를 GUI에서 설정된 프레임(fps)에 따라 표시
+  4. 파일 이름이 수신 시 그대로 보존
+  5. 파운틴 코드 도입 고려 (필요하면) → 도입함
+수신 측:
+  1. vibedrop을 이용해 수신 웹사이트 배포
+  2. 카메라 달린 모든 스마트기기에서 동작
+
+이후 추가 요청 (순서대로):
+  a. "패키지/프로그램 설치했니?" → 사용자 PC에는 설치 안 했고 클라우드에만 설치했다고 답함.
+  b. run_sender.bat 실행 시 venv 구성 후 그 안에서 실행 → 반영 완료.
+  c. https://vibedrop.cc/skill.md 읽고 스킬 설치 + VibeDrop 설정 → vibedrop.cc는 egress 차단이라
+     WebFetch 요약본 + CLI 소스 분석으로 'vibedrop-deploy' 스킬 제안(propose_skills) → 사용자가 저장해
+     현재 'anthropic-skills:vibedrop-deploy'로 존재. 이후 api.vibedrop.cc 허용되어 실제 배포까지 완료.
+  d. 사용자가 egress 설정을 바꾼 뒤 사이트 확인 요청 → 배포 사이트로 종단간 테스트 통과.
+  e. 초록 테두리로 감지 여부 표시하지 말고, 감지하면 사각형 박스가 JAB code를 추적하며 표시
+     → 구현·배포 완료 (8장 참고).
+  f. (현재) 이 인수인계 문서 작성.
+
+--------------------------------------------------------------------------------
+2. 폴더 구성 (C:\play_claude)
+--------------------------------------------------------------------------------
+C:\play_claude\
+  jabcodeReader.exe, jabcodeWriter.exe, libjabcode.dll   ← 사용자 제공 원본 (건드리지 않음)
+  jab_transfer\
+    README.md               사용자용 설명서 (한국어)
+    인수인계.txt             이 문서
+    run_sender.bat          .venv 생성 → requirements 설치(변경시에만) → sender\jab_sender.py 실행
+    deploy_receiver.bat     → deploy_receiver.ps1 호출 (Node.js 필요)
+    deploy_receiver.ps1     npx @vibedrop/cli deploy receiver --unlisted [--slug 기존] → 주소를
+                            receiver_url.txt / receiver_slug.txt 에 저장 (UTF-8 BOM, CRLF)
+    receiver_url.txt        https://9bh8ppse.vibedrop.site  (송신 GUI가 자동으로 읽어 QR 표시)
+    receiver_slug.txt       9bh8ppse
+    .venv\                  사용자가 run_sender.bat로 생성함 (Python 3.14.4, PySide6 6.11.2,
+                            qrcode 8.2, pillow 12.3.0). .venv\requirements.installed 로 변경 감지.
+    sender\
+      jab_sender.py         PySide6 GUI 메인
+      jabfountain.py        프로토콜·컨테이너·파운틴 인코더 + (검증용) 파이썬 디코더
+      jabcode_backend.py    libjabcode ctypes 바인딩 + jabcodeWriter.exe 폴백 + 용량 측정
+      framegen.py           ProcessPoolExecutor 프레임 생성 워커
+      export_frames.py      디버그용: 송신 프레임을 PNG로 덤프
+      requirements.txt      PySide6>=6.5, qrcode>=7.4, pillow>=10
+    receiver\               ← 이 폴더 그대로 VibeDrop에 배포됨
+      index.html            UI + CSS (모바일 우선, 다크)
+      app.js                메인 스레드: 카메라, 프레임 분배, 추적 박스, UI
+      decode-worker.js      WASM 디코드 워커 (여러 개)
+      fountain-worker.js    패킷 검증·가우스 소거·파일 복원 워커 (1개)
+      jabcore.js            공용 로직 (브라우저 워커/Node 겸용 UMD)
+      jabcode.wasm          libjabcode 디코더 (wasi-sdk 빌드, ~119 KB)
+      fflate.js(+LICENSE)   DecompressionStream 미지원 브라우저용 zlib 해제 폴백 (fflate UMD)
+    wasm\
+      jabwasm.c             WASM 래퍼 C 소스
+      build.sh              wasi-sdk 빌드 스크립트 (WASI_SDK, JABCODE_SRC 환경변수)
+    tools\                  검증 도구 (8·9장)
+
+클라우드 작업 사본(세션 종료 시 사라짐): /home/claude/jabtx/{sender,receiver,wasm,tools,dist}
+  dist/jab_transfer 가 사용자 폴더와 동일한 배포본. 다음 세션에서는 사용자 폴더가 정본(source of truth).
+
+--------------------------------------------------------------------------------
+3. 제공 바이너리 분석 결과
+--------------------------------------------------------------------------------
+- 3개 모두 x64 PE, MinGW(Fedora, GCC 15/16)로 빌드. libjabcode.dll 은 libpng 1.6.37 / libtiff / zlib
+  정적 포함(2.6 MB), import는 KERNEL32/msvcrt 뿐. exe 2개는 libjabcode.dll 을 import.
+- DLL export: 공식 jabcode(github.com/jabcode/jabcode, 헤더 VERSION "2.0.0") API 그대로
+  createEncode, destroyEncode, generateJABCode, decodeJABCode, decodeJABCodeEx, saveImage,
+  readImage 등.
+- 구조체(jabcode.h v2.0.0) — Windows x64와 Linux x64에서 오프셋 동일 (long 미사용):
+    jab_encode: color_number, symbol_number, module_size, master_symbol_width,
+                master_symbol_height, palette*(+24), symbol_versions*(+32), symbol_ecc_levels*(+40),
+                symbol_positions*(+48), symbols*(+56), bitmap*(+64) ; sizeof=72
+    jab_bitmap: width,height,bits_per_pixel,bits_per_channel,channel_count (20B) + pixel[] (RGBA)
+    jab_data:   int32 length + char data[]
+- 주의: generateJABCode 는 성공 시 0 을 반환 (JAB_SUCCESS=1 아님!). 실패 코드 1~4
+  (4 = "Message does not fit into the specified code").
+- 주의: libjabcode 는 전역 PRNG 상태 static lcg64_seed (pseudo_random.c) 를 가짐 → 스레드 안전하지 않음.
+  그래서 송신측은 멀티스레드가 아니라 멀티프로세스(ProcessPoolExecutor)로 프레임 생성.
+- 주의: generateJABCode 는 enc 재사용 안전성이 불확실 → 매 프레임 createEncode/destroyEncode.
+- 검증(Wine, 클라우드): MinGW로 만든 C 하네스로 DLL 로드 → offsetof 가 ctypes 정의와 일치
+  (bitmap=64, versions=32, ecc=40, size=72), 인코드→디코드 왕복 20/20 성공.
+  제공 jabcodeWriter.exe 출력 PNG → 우리 WASM 디코더로 원본과 바이트 일치.
+- jabcodeWriter.exe 인자(폴백에서 사용): --input-file, --output, --color-number, --module-size,
+  --symbol-version X Y, --ecc-level
+
+--------------------------------------------------------------------------------
+4. 전송 프로토콜 (송신 jabfountain.py ↔ 수신 jabcore.js 가 비트 단위로 일치해야 함)
+--------------------------------------------------------------------------------
+[컨테이너] 파일 1개 → 바이트열 (리틀엔디언)
+   0  4  magic b"JFC1"
+   4  1  flags  bit0 = zlib 압축 (zlib.compress level 9, 5% 이상 줄 때만)
+   5  1  reserved 0
+   6  2  name_len u16
+   8  4  원본 파일 크기 u32
+  12  4  원본 CRC32 u32 (zlib.crc32)
+  16  4  저장 데이터 길이 u32
+  20  .  파일명 UTF-8 (basename, 1024B 초과 시 확장자 보존하며 절단) + 데이터
+  → K = ceil(len/block_size) 블록으로 분할, 마지막 블록 0 패딩.
+  수신측 해제: DecompressionStream('deflate')(=zlib 포맷) → 실패 시 fflate.unzlibSync.
+
+[패킷] JAB Code 1프레임 = 패킷 1개, 헤더 28B (struct "<2sBBIIHIIH" + CRC u32)
+   0  2  b"JF"
+   2  1  version = 1
+   3  1  flags (0)
+   4  4  session u32
+   8  4  K u32
+  12  2  block_size u16  (용량-28 을 4의 배수로 내림 → JS Uint32 XOR 최적)
+  14  4  컨테이너 전체 길이 u32
+  18  4  seed u32 (패킷 번호)
+  22  2  degree u16
+  24  4  CRC32( bytes[0:24] + payload )
+  28  .  payload (block_size)
+
+[파운틴 코드]
+- 모든 패킷 = 소스 블록 degree 개의 XOR. (시스테매틱 단계 없음 — 아래 설계 근거 참고)
+- 블록 인덱스: rng = mulberry32((seed ^ session) >>> 0); i = rng() % K 반복, 중복 제외, degree 개.
+  mulberry32 (JS):
+    a = (a + 0x6D2B79F5)|0; t = Math.imul(a ^ (a>>>15), 1|a);
+    t = (t + Math.imul(t ^ (t>>>7), 61|t)) ^ t; return (t ^ (t>>>14))>>>0;
+  Python 구현(Mulberry32 클래스)은 & 0xFFFFFFFF 마스킹으로 동일 결과 (실제 종단 테스트로 검증됨).
+- degree 분포(송신측만 앎, 헤더에 기록): K<=8 → [1,K] 균등, 그 외 [int(lnK/2)+2, min(K,int(2lnK)+4)] 균등.
+  degree는 random.Random((session<<32)|seed).randint 로 결정적으로 생성.
+  ※ 반드시 홀/짝 혼합: 짝수 degree만 쓰면 GF(2)에서 모든 행이 짝수 가중치 → rank 최대 K-1 → 복원 불가
+    (실제로 이 버그를 시뮬레이션에서 발견함).
+- 수신 디코더: 온라인 가우스 소거. 행 = (Uint32Array 마스크 W=ceil(K/32) 워드, Uint32Array 데이터 D워드).
+  최상위 set bit h 를 피벗 키로, 피벗 있으면 XOR 하며 내려가고 없으면 저장(rank++). 0이 되면 종속(useless).
+  rank==K 이면 h 오름차순으로 역대입해 해 계산.
+  성능: 1 MB(K=3049, bs=328) → add 총 289ms + 역대입 161ms (Node, 데스크톱).
+- session = (crc32(container) ^ (crc32("colors/version/ecc/block") << 1)) & 0xFFFFFFFF (0이면 1).
+  → 같은 파일·설정이면 송신을 재시작해도 세션 동일 → 수신 진행 유지. 재시작 시 시작 seed는 랜덤(31bit).
+
+[설계 근거 — 시뮬레이션 결과]
+- 최초 설계: 시스테매틱(seed<K는 원본 블록) + Robust Soliton + 피일링(peeling) 디코더.
+  → 손실 30%에서 오버헤드 30~70% 로 나쁨. 원인: 놓친 원본 블록을 저차수 repair 패킷이 커버할 확률이 낮음
+    (coupon collector). GE 폴백을 붙여도 커버리지 문제는 해결 안 됨.
+- 최종: 비시스테매틱 + 균등 degree + 온라인 GE.
+  결과(오버헤드): K=50 2%, K=300 0.3%, K=1000 0.1%, K=5 정도의 아주 작은 K에서만 수십 %.
+  카메라 수신은 어차피 중간부터 들어오고 무작위로 놓치므로 비시스테매틱이 유리.
+
+--------------------------------------------------------------------------------
+5. 송신 프로그램 (sender/) 세부
+--------------------------------------------------------------------------------
+jabcode_backend.py
+- DllBackend: ctypes.CDLL, os.add_dll_directory. generate(data, colors, version, ecc):
+  createEncode(colors,1) → module_size=1, symbol_versions[0]=(v,v), symbol_ecc_levels[0]=ecc →
+  jab_data 버퍼 직접 구성 → generateJABCode(rc==0 성공) → bitmap 헤더 다음 주소에서 w*h*4 RGBA 복사
+  → destroyEncode. 1모듈 = 1픽셀 이미지 반환 (화면 확대는 Qt에서 nearest).
+- ExeBackend: 임시폴더에 in.bin 쓰고 jabcodeWriter.exe 실행(CREATE_NO_WINDOW) → PNG를 PIL로 읽음.
+- load_backend(prefer): DLL 우선, 실패 시 EXE. 검색 경로: JABCODE_DIR 환경변수, sender, 상위,
+  상위의 상위(= C:\play_claude), cwd. Windows는 libjabcode.dll / jabcodeWriter.exe,
+  Linux는 libjabcode.so 등.
+- probe_capacity(): 0x80~0xFF 랜덤 바이트(최악 = 전부 byte mode)로 이진 탐색해 최대 바이트 수 측정, 캐시.
+  측정치(리눅스 .so, 동일 소스): 8색 v6 e5=243B, v8 e5=359B(→블록 328), v10 e3=636B, v10 e5=487B,
+  v14 e5=811B, v20 e5=1454B / 4색 v8 e5 ≈ 2/3 수준.
+  생성 시간: v8~10 ≈ 20~50ms, v14~20 ≈ 50~80ms (마스크 8종 평가가 비쌈) → 멀티프로세스 필요.
+
+framegen.py
+- ProcessPoolExecutor(max_workers=min(6, cpu-1)), initializer가 각 프로세스에서 backend 로드 +
+  FountainEncoder 생성(container 전체를 initargs로 피클 전달). make_frame(seed) → (seed, degree, w, h, rgba).
+- Windows spawn 방식이므로 jab_sender.py 는 main() 안에서 mp.freeze_support() + __main__ 가드.
+
+jab_sender.py (PySide6)
+- 좌측 패널: 파일 선택(드래그&드롭), 심볼 버전(1~32, 기본 8 = 49×49 모듈),
+  (색 수 선택은 2026-10-02 제거 — jabcode_backend.COLOR_NUMBER = 8 고정, 17장),
+  ECC(1~10, 기본 5), fps(1~60, 기본 6), zlib 압축 체크, 생성 엔진(DLL/EXE), 수신 페이지 URL + QR 버튼,
+  정보 패널(세션ID, 심볼, 프레임당 데이터, K, 최소 필요 프레임 K+2, 예상 시간, 이론 속도, 표시 프레임 수,
+  실제 fps, 버퍼, 생성 지연 경고).
+- CodeView(QWidget): 흰 배경, 정수 배율 nearest 확대, 주위 4모듈 quiet zone 확보.
+- Producer(QThread): 풀에 seed 순서대로 제출(작업자×2 선행), 결과를 deque에 적재(최대 fps×2, 최소 8).
+  JabCodeError 프레임은 건너뜀. QTimer(PreciseTimer) 1000/fps 마다 pop 해서 표시, 비면 underrun 카운트.
+- 설정 변경 → mark_dirty → 실행 중이면 stop 후 재시작(용량 재측정).
+- 단축키: F11/더블클릭 전체화면(사이드 패널 숨김), Esc 복귀, Space 시작/일시정지.
+- 수신 URL: receiver_url_from_file() (sender 또는 상위의 receiver_url.txt) > QSettings("jabtx","sender")
+  > 빈칸. QR은 qrcode 패키지 사용.
+- QSettings 키: prefer, receiver_url, last_dir.
+
+run_sender.bat (ASCII, CRLF)
+- .venv 없으면 `py -3` 또는 `python`으로 생성 → fc /b 로 sender\requirements.txt 와
+  .venv\requirements.installed 비교, 다르면 pip 업그레이드 + 설치 후 복사 → sender 폴더에서
+  .venv\Scripts\python.exe jab_sender.py 실행, 오류 시 pause.
+- 사용자 PC에서 이미 실행되어 .venv 및 __pycache__(cpython-314) 생성 확인됨. GUI 실제 동작 여부는
+  사용자 피드백 없음 (Python 3.14 + PySide6 6.11.2 조합).
+
+--------------------------------------------------------------------------------
+6. WASM 디코더 (wasm/)
+--------------------------------------------------------------------------------
+- emsdk 설치는 storage.googleapis.com 차단으로 실패 → wasi-sdk 25 (GitHub 릴리스) 로 빌드.
+- 빌드: clang --target=wasm32-wasi -O3 -flto -mexec-model=reactor, jabcode/src/jabcode/*.c 중 image.c
+  제외(png/tiff 의존), -Wl,--export=malloc,free, stack 2MB, initial-memory 16MB(성장 가능), strip.
+  SIMD(-msimd128) 빌드도 해봤으나 속도 차이 없어 제거.
+- 임포트: wasi_snapshot_preview1 의 fd_write, fd_close, fd_seek, fd_fdstat_get, random_get →
+  jabcore.js 의 최소 shim이 제공(fd_write는 로그 버퍼에 누적).
+- export: memory, _initialize, malloc, free,
+    jw_buffer(w,h) → RGBA 버퍼 포인터 (jab_bitmap 재사용)
+    jw_decode(mode) → 길이(>=0) 또는 -1-status   (내부적으로 decodeJABCodeEx + 전역 g_syms[61])
+    jw_result() → 데이터 포인터
+    jw_status()
+    jw_geom(float* out11) → [side_x, side_y, module_size, FP0x,FP0y, FP1x,FP1y, FP2x,FP2y, FP3x,FP3y], 1/0
+  FP 순서: 좌상, 우상, 우하, 좌하. FP 중심은 심볼 모듈 좌표 (3.5,3.5)/(side-3.5, ...) 에 해당
+  (검증: 6px/모듈 + 24px 여백 이미지에서 FP0=(45,45)=24+3.5×6).
+  detectMaster는 파인더 패턴 4개를 찾으면 디코드 실패여도 pattern_positions/module_size 를 채운다
+  → 감지됐지만 못 읽은 경우(status 1)도 위치를 얻을 수 있음.
+- 디코드 시간(데스크톱 Node): 1280×720 ≈ 100~150ms, 해상도를 줄여도 크게 안 빨라짐(LDPC/검출 고정비용).
+  축소하면 인식률만 떨어짐(720→440 크롭 축소 시 성공 64→45).
+- decodeJABCodeEx 는 입력 bitmap 을 balanceRGB 로 제자리 수정함(매번 새로 복사하므로 무관).
+
+--------------------------------------------------------------------------------
+7. 수신 웹앱 (receiver/)
+--------------------------------------------------------------------------------
+jabcore.js: crc32, mulberry32, blockIndices, parsePacket(CRC·범위 검증), FountainDecoder,
+  parseContainer(async, 압축 해제 + 크기·CRC 검증), loadJab(wasm) → {decode, decodeEx, memoryBytes, log}.
+  decodeEx → {data|null, status, geom|null}.
+
+decode-worker.js: init 시 fetch(jabcode.wasm) → WebAssembly.compile(arrayBuffer) (MIME 무관).
+  frame 메시지 {id,w,h,buf} → decodeEx → {type:'result', id, status, ms, buf, data, geom} (transfer).
+  메모리 384MB 초과 또는 trap 시 인스턴스 재생성. (변수명 module 사용 금지 — jabcore.js UMD 판별과 충돌했던 버그 있었음)
+
+fountain-worker.js: importScripts(jabcore.js, fflate.js). 세션별 디코더 Map(최대 4), 완료 세션 Set.
+  메시지: progress{session,k,rank,bs,total,received,useless,useful,isNew}, assembling, file{name,data,frames},
+  error, invalid, dup-finished.
+
+app.js 주요 동작
+- 워커 수: 기본 max(1, min(4, hardwareConcurrency-1)), 설정에서 변경.
+- 카메라: getUserMedia({facingMode: ideal 'environment', width/height ideal 1920×1080(설정: 720p/4K),
+  frameRate 30}), 실패 시 {video:true} 재시도. 오류 이름별 한국어 안내. playsinline/muted.
+  연속 초점(focusMode continuous) 시도, zoom 지원 시 슬라이더 표시, Wake Lock 요청, 카메라 목록 선택.
+- 프레임 분배: requestVideoFrameCallback 있으면 새 비디오 프레임만 전송, 없으면 30ms 간격 rAF.
+  idle 워커마다 canvas drawImage → getImageData → buffer transfer. 분석 크기 최대 1000px(설정 720/1400).
+- 분석 영역(설정 "인식 영역" 슬라이더): 기본 100 = 전체 화면(가이드 숨김). 100 미만이면 가운데 정사각
+  (짧은 변 × 비율) 크롭 + 점선 가이드 표시.
+- ROI 추적(v1.1, chooseRegion/roiResult): 위치(geom)를 얻으면 파인더 패턴 중심 기준 정사각(FP 간격×2.2,
+  최소 320px)만 원해상도로 잘라 분석. 700ms 동안 위치 없음 또는 ROI 프레임 4연속 실패 시 탐색 모드.
+  탐색 모드: [전체(축소), 가운데 타일, 앞쪽 끝 타일, 전체, 가운데, 뒤쪽 끝] 순환 (타일 = 짧은 변 정사각,
+  긴 축을 따라 위치). 슬라이더 < 100 이면 탐색 시 가이드 영역만 사용. HUD 칩 "추적 W×H"/"탐색 중".
+  · 근거: 1080p 전체 화면을 1000px로 줄이면 0.52배 → 코드가 화면 높이의 ~35% 미만이면 모듈 < 3.5px로 검출 실패.
+- 전송률(v1.1): 세션별 첫 패킷 인식 시각(rateT0) ~ rank==K 시각(rateT1), min(rank×bs, total)/경과초.
+  1초 미만은 "측정 중". KB/s(10 미만 소수 2자리) / MB/s. 통계 "전송률", 완료 카드·상태 메시지에 평균 표시.
+  ※ 이전 기본(가운데 85%)은 코드가 가이드 밖으로 조금만 나가도 검출 실패 → 움직이는 영상 인식률 15%.
+    전체 화면으로 바꾼 후 75%, 전송 테스트 인식률 98%.
+- 추적 박스(사용자 요청으로 '초록 가이드 플래시' 제거 후 구현):
+  frameMeta(id → {sx, sy, sc(축소비), t(캡처 시각), video 여부}) 보관 → 결과의 geom 4점으로
+  호모그래피(8×8 가우스 소거) 계산 → 심볼 네 모서리 (0,0)(S,0)(S,S)(0,S) → 분석 이미지 → 비디오 좌표
+  → object-fit:contain 매핑으로 화면 좌표 → <canvas id="ov"> (DPR 대응)에 그림.
+  · 늦게 도착한(캡처 시각이 더 오래된) 결과는 무시.
+  · 등속 예측: 직전 결과와의 꼭짓점 속도(지수 평활 0.4/0.6) × min(250ms, 캡처 후 경과)×0.8 만큼 앞당김.
+  · 표시 위치는 목표로 지수 보간(시정수 55ms). 0.3초 후부터 페이드, 0.7초 지나면 사라짐.
+  · 색: 초록 "✓ 수신"(디코드 성공) / 주황 "인식 중…"(검출만). 반투명 채움 + 외곽선 + 굵은 모서리 브래킷 + 라벨.
+  · 동영상 파일 모드에서도 동작(video 소스일 때), 사진 모드에서는 표시 안 함.
+- HUD 칩: 분석 fps(최근 2초), 인식률(최근 40프레임), 카메라 해상도.
+- 진행: 진행률·블록 rank/K·유효 프레임(중복)·남은 시간(유효 패킷 수신 속도 기반)·전송 크기·세션.
+- 완료: Blob URL + <a download=원래이름> 카드, navigator.canShare 시 공유 버튼, 진동,
+  iOS 외에는 자동 다운로드 클릭. 같은 세션 프레임이 계속 보이면 "✅ 이름 수신 완료 — 송신 정지해도 됨".
+- 동영상/사진 파일 모드: input(accept video/*,image/*, multiple). 동영상은 1/12초 간격 seek 후 캡처
+  (전체 프레임). 사진은 createImageBitmap(폴백 Image).
+- 환경 점검: 카카오톡 인앱 → kakaotalk://web/openExternal?url= 링크 안내, NAVER/Instagram/FB/Line 인앱 안내,
+  비보안 컨텍스트·getUserMedia 미지원·WebAssembly/Worker 미지원 안내.
+- 테스트 훅: window.__jab = S.
+
+--------------------------------------------------------------------------------
+8. 검증 결과 (모두 클라우드 컨테이너에서 수행)
+--------------------------------------------------------------------------------
+1) Python 시뮬레이션(파운틴): 4장 표 참고. 한글 파일명 보존 확인.
+2) Python 생성 PNG → Node + WASM → 파운틴 → 파일: 손실 없는 프레임 62장 = K 정확히 일치, 바이트 일치.
+3) 카메라 왜곡 시뮬레이션(tools/degrade.py: 대비 감소, 화이트밸런스, 감마, 원근, 블러, 노이즈, JPEG) 스윕
+   (frac=0.6, blur=1.2, tilt=0.06, noise=6, 30프레임, 성공 수):
+     4색: v6 e3 20, v6 e5 22, v8 e3 23, v8 e5 24, v10 e3 15, v10 e5 11, v12 6~7, v14 0~4
+     8색: v6 e3 26, v6 e5 27, v8 e3 20, v8 e5 23, v10 e3 24, v10 e5 14, v12 3, v14 0~1
+   → 기본값 8색/v8/ECC5 채택. (4색이 더 견고하지 않았음)
+4) 헤드리스 Chromium 가짜 카메라(--use-file-for-fake-video-capture=y4m, tools/make_y4m.py,
+   tools/e2e.py, 모바일 뷰포트 412×900):
+   '보고서 최종(v2).zip' 30KB(K=92): 로컬 24초 → 추적 박스/전체화면 분석 적용 후 18초, 인식률 98%, 바이트 일치.
+   배포 사이트(https://9bh8ppse.vibedrop.site)로 같은 테스트 49초 성공(초기 로딩·서버 부하 영향).
+5) 동영상 파일 모드: Playwright Chromium은 H.264 미지원 → VP9 webm 으로 테스트, 137초에 성공(seek 1/20s 당시;
+   이후 1/12s로 변경).
+6) 추적 박스: 부드럽게 움직이는 합성 영상(/tmp/move.y4m)에서 스크린샷 확인 — 박스가 코드 모서리에 잘 맞고 따라감.
+7) 송신 GUI: QT_QPA_PLATFORM=offscreen 으로 실행, 293KB 파일(K=915) 6fps 표시, 언더런 0 확인.
+8) 배포 사이트 파일 7개 HTTP 200, jabcode.wasm 은 application/wasm.
+
+미검증: 실제 휴대폰(Android Chrome, iPhone Safari) 카메라, 실제 Windows에서의 GUI 동작/성능,
+        실제 모니터·카메라 조합의 최적 설정, 웹킷 엔진(Playwright webkit 다운로드 차단).
+
+--------------------------------------------------------------------------------
+9. 테스트 도구 사용법 (tools/, 클라우드 기준 — Node 22, pip pillow numpy playwright)
+--------------------------------------------------------------------------------
+  python sender/export_frames.py <파일> <outdir> [--count N --colors 8 --version 8 --ecc 5 --scale 6]
+      (Linux에서는 sender/에 libjabcode.so 필요: jabcode 소스를 image.c 빼고 gcc -shared -fPIC 로 빌드)
+  python tools/degrade.py <png폴더> <jpg폴더> "frac=0.6,blur=1.0,tilt=0.06,noise=5"
+  node tools/nodetest.js <이미지폴더> [출력폴더]          (npm i pngjs jpeg-js, WASM 환경변수로 경로 변경)
+  python tools/make_y4m.py <png폴더> out.y4m 5 "frac=0.7,blur=0.8"   (코드프레임당 비디오프레임 5 = 30fps/6fps)
+  python tools/e2e.py out.y4m <원본파일> <타임아웃초> [URL]   (기본 http://localhost:8765/index.html,
+      receiver 폴더에서 python -m http.server 8765)
+  python tools/e2e_file.py <webm> <원본파일>
+  node tools/gebench.js                                  (GE 성능; 두 크기 비교가 /tmp/big.bin 공유해 첫 줄 ok=false는 경쟁조건, 무시)
+
+--------------------------------------------------------------------------------
+10. 배포 (VibeDrop)
+--------------------------------------------------------------------------------
+- 현재: https://bk76xykb.vibedrop.site (v1.1, 사용자 PC 키 소유 — 14장). 아래는 v1.0(9bh8ppse) 당시 기록.
+- 이전: https://9bh8ppse.vibedrop.site  (unlisted, title "JAB Optical Receiver", Free, 만료 2026-10-31
+  — 무료 unlisted는 30일간 사람 방문 없으면 만료). 마지막 배포 = 추적 박스 버전.
+- 배포 명령(클라우드): cd jab_transfer && NODE_USE_ENV_PROXY=1 npx -y @vibedrop/cli deploy receiver
+      --slug 9bh8ppse --unlisted --title "JAB Optical Receiver"
+  ※ NODE_USE_ENV_PROXY=1 필수: Node 22 fetch는 기본적으로 HTTPS_PROXY를 안 써서 "✖ Forbidden" 발생했음.
+- API 키: 클라우드 ~/.vibedrop/config.json 의 익명 키 (vd_anon_2iHC... — 이 세션 컨테이너에만 존재,
+  세션 종료 시 소실). curl로 POST https://api.vibedrop.cc/v1/keys/anonymous 해서 받은 키를 config에 넣었음.
+  사이트 소유권 이전용 claim 링크(1시간 유효)를 사용자에게 두 번 전달함:
+    fx47hj7wfyckkz8vrckq4tvt (최초), v6nhnas6qst4k8kvwuhs9pjf (재배포) — 둘 다 이미 만료됐을 가능성 높음.
+  사용자가 claim 했는지는 확인 안 됨. claim 안 했고 키도 없으면 같은 slug 재배포 불가 → 새 사이트로 배포하고
+  receiver_url.txt / receiver_slug.txt 갱신 필요 (deploy_receiver.ps1 은 slug 실패 시 자동으로 새 배포).
+- 확인 과정에서 api.vibedrop.cc/v1/keys/anonymous 를 몇 번 호출해 쓰지 않는 익명 키 몇 개가 생김(무해).
+- 스킬: 'anthropic-skills:vibedrop-deploy' (사용자가 저장함). vibedrop.cc/skill.md 원문은 egress 차단으로
+  못 받았고 WebFetch 요약 + @vibedrop/cli 0.3.0 / @vibedrop/sdk 소스 분석으로 작성.
+  SDK: apiUrl 기본 https://api.vibedrop.cc (VIBEDROP_API_URL로 변경), POST /v1/keys/anonymous,
+  deploy는 zip FormData 업로드. CLI 명령: deploy(-s slug, -t title, --public, --unlisted, -p password(Pro)),
+  claim-url, list, rm, whoami.
+
+--------------------------------------------------------------------------------
+11. 환경/네트워크 제약 (이 세션에서 겪은 것)
+--------------------------------------------------------------------------------
+- 클라우드 egress 차단 확인: storage.googleapis.com(emsdk), www.python.org, www.nuget.org,
+  cdn.playwright.dev / playwright.download.prss.microsoft.com, vibedrop.cc(본 사이트).
+  허용: github.com 및 릴리스 자산, pypi, npm registry, Ubuntu apt.
+  api.vibedrop.cc 와 *.vibedrop.site 는 처음엔 차단 → 사용자가 설정 변경 후 허용됨.
+- 사용자 기기 "win11com": device_bash 는 Windows가 아니라 데스크톱 앱 안의 Linux VM
+  (node v22, python3, curl 있음). Windows exe/dll 실행 불가. 폴더는 $HOME/mnt/play_claude 로 마운트.
+  삭제는 권한 요청 필요. 사용자 Windows 사용자명: MYCom, Python 3.14 설치 경로
+  C:\Users\MYCom\AppData\Local\Programs\Python\Python314.
+- 클라우드에 설치했던 것(세션 종료 시 소멸): pip PySide6/pefile/numpy/pillow/qrcode, npm pngjs/jpeg-js/fflate,
+  apt wine + gcc-mingw-w64-x86-64, wasi-sdk-25 (/home/claude/wasi-sdk-25.0-x86_64-linux),
+  jabcode 소스 (/home/claude/jabcode), Linux libjabcode.so (/home/claude/build).
+  다음 세션에서 WASM 재빌드가 필요하면 wasi-sdk와 jabcode 소스를 다시 받아 wasm/build.sh 실행.
+
+--------------------------------------------------------------------------------
+12. 알려진 이슈 / 다음에 할 만한 일
+--------------------------------------------------------------------------------
+1. [최우선] 실제 휴대폰 테스트 결과를 사용자에게 받기. 인식이 나쁘면: 심볼 버전 6, fps 낮추기, 화면 밝기↑,
+   분석 크기 1400, "인식 영역"을 가운데로 좁히기 등 조정. iPhone Safari 호환성 확인(rVFC는 15.4+, 없으면 rAF 폴백;
+   DecompressionStream 16.4+, 없으면 fflate).
+2. 송신 GUI가 Windows/Python 3.14 에서 정상 동작하는지 사용자 확인 필요 (ProcessPool spawn, ctypes DLL 로드).
+   DLL 디버그 출력(printf "JABCode Error...")이 콘솔에 찍히는 것은 용량 측정 중 정상 현상.
+3. 추적 박스는 분석 지연(폰에서 수백 ms 예상)만큼 늦을 수 있음 — 등속 예측으로 보정했지만 실기기 확인 필요.
+   더 개선하려면: 가벼운 별도 검출(파인더 패턴만) 경로, 또는 직전 위치 주변만 크롭해 분석(ROI 추적)으로 속도↑.
+4. 전체 화면 분석으로 바꾼 뒤 분석 fps가 다소 감소(테스트 서버 기준). ROI 추적 크롭이 해결책 후보.
+5. 동영상 파일 모드는 seek 기반이라 느림(23초 영상에 2분대). 재생 기반 캡처로 개선 가능.
+6. 송신측 프레임 생성이 무거움(마스크 평가). 높은 버전 + 높은 fps 시 언더런 → GUI에 경고 표시됨.
+7. VibeDrop 무료 사이트 만료(30일 무방문) / claim 여부 — 10장 참고.
+8. 큰 파일(수 MB↑)은 광학 대역폭(~2KB/s 이론) 때문에 비현실적. 4GB 초과 미지원(u32 필드).
+9. 사용자 폴더 sender\__pycache__ 는 사용자의 실행 흔적이니 그대로 둠.
+
+--------------------------------------------------------------------------------
+13. 작업 규칙 메모 (다음 Claude에게)
+--------------------------------------------------------------------------------
+- 사용자 폴더 C:\play_claude 가 정본. 수정은 device_bash로 제자리 편집하거나, 클라우드에서 빌드한 뒤
+  /mnt/user-data/outputs 경유 device_commit_files 로 덮어쓰기.
+- receiver 를 바꾸면: (1) 사용자 폴더 receiver\ 갱신 (2) VibeDrop 재배포(키가 있으면 --slug 9bh8ppse)
+  (3) 가능하면 tools/e2e.py 로 회귀 테스트.
+- 프로토콜(4장)을 바꾸면 반드시 jabfountain.py 와 jabcore.js 를 동시에 바꾸고 PROTO_VERSION 올릴 것.
+- egress 차단은 우회하지 말고 차단된 호스트를 사용자에게 보고.
+- 사용자는 한국어, 간결한 답변 선호.
+
+--------------------------------------------------------------------------------
+14. 2026-10-01 후속 세션 (Windows 데스크톱 앱에서 직접 실행 — exe/dll/Edge 사용 가능)
+--------------------------------------------------------------------------------
+[추적 박스 간헐 실패 분석] (합성 1080p 프레임 + 실제 libjabcode.dll + 배포본 WASM 으로 측정)
+ 1) 버그(v1.2에서 수정): 검출만 되고 메타데이터 해독 실패 시 libjabcode 가 symbols[0].side_size 를
+    VERSION2SIZE(0)=17 로 덮어씀(detector.c detectMaster 의 alignment 경로) → jw_geom 이 side=17 전달 →
+    박스 ~46% 확대(모서리 오차 중앙 36%). 검출 결과의 19%, 화면 전환 혼합 프레임에서 특히 많음.
+    app.js 속도 예측이 이를 이동으로 오인해 박스가 튐(정지 상태에서도 최대 150%).
+    수정안: 디코드 성공 프레임의 side 를 세션별 캐시해 사용(없으면 FP 간격/module+7 로 추정),
+    면적 35% 이상 급변 결과 거부 + 속도 상한. (시뮬레이션: 오차>10% 시간 34~60% → 0~17%)
+ 2) 검출 실패로 사라짐: 해상도(전체 화면 0.52배 축소), 모션 블러 ≥20px → 0% → ROI 추적으로 해상도 문제 해결(v1.1).
+ 3) 분석 지연(폰 ~300ms 추정)으로 이동 중 박스가 뒤처짐 → 미해결 (ROI로 분석 이미지가 작아져 일부 완화).
+[v1.1 배포] ROI 추적 + 전송률 표시. 회귀 테스트(Edge 가짜 카메라, 12KB 한글 파일명, K=37):
+    코드 28% 크기 이동: v1.0 60초간 인식 0% / v1.1 9.1초 완료(인식 80~90%), 배포 사이트 11.1초, 바이트 일치.
+    코드 50% 크기 이동: v1.0·v1.1 모두 8.8초 (회귀 없음).
+[배포 키] 사용자 PC ~/.vibedrop/config.json (2026-09-18 생성된 키) 로 배포 → bk76xykb 는 이 키 소유이므로
+    이후 deploy_receiver.bat 재실행 시 --slug bk76xykb 로 같은 주소에 갱신됨. claim 링크(1시간)는 사용자에게 전달.
+    9bh8ppse(v1.0)는 다른(소실된) 키 소유라 갱신/삭제 불가, 방문 없으면 2026-10-31 만료.
+[v1.2 배포 (같은 주소 bk76xykb)] app.js onGeom:
+    · side: ok 프레임의 geom.side 를 TRK.okSide 로 캐시. 검출만 된 프레임은 sideFromFp(FP 간격²/(module×max|dx|,|dy|)+7,
+      유효 크기로 반올림) 추정값과 캐시가 가로·세로 8모듈 이내면 캐시, 아니면 추정값 사용.
+    · 거부: 볼록하지 않은 사각형 / 면적비 >1.35 또는 <0.74 (단 2회 연속이면 실제 변화로 수용, TRK.rej).
+    · 예측: 모서리별 속도 → 중심 이동 속도(EMA 0.4/0.6), 상한 = 초당 심볼 한 변의 2배. lead 250ms×0.8 유지
+      (400~500ms로 늘려도 이동 시나리오 개선 없음 — 사인 이동에서 선형 예측 한계).
+    · 시뮬레이션(지연 120/300ms, 정지): 최대 오차 101~182% → 15~23%, p90 34~74% → 3~8%.
+      이동(진폭 120px, 지연 120ms) p90 43~71% → 14~21%. 지연 300ms 이동 시 중앙 33%는 남음(구조적).
+    · 회귀: small/mid y4m 모두 8.2초, 바이트 일치. 배포본 바이트 일치.
+    · 배포 직후 VibeDrop 이 간헐적으로 500/수십 초 지연 응답 (첫 로딩 24초 걸린 사례) — 서비스 측 문제.
+[4심볼 병렬 출력 검토] (sim exp4: 2×2 v8 vs 단일 v8 vs 단일 v18, 같은 모듈 px에서 비교)
+    · libjabcode 는 이미지 안에 심볼이 여러 개면 FP를 섞어 실패: 이웃이 들어간 ROI×2.2 → 0~6%.
+      심볼별로 좁게 자르거나(FP간격×1.4, 최소크기 없이) 바깥을 흰색 마스크 → 85~100%.
+    · 전체 화면 탐색: 4심볼이면 geom 3~8/12, 디코드 0~2/12 (단일은 11~12/12) → 초기 포착 수단 필요
+      (사분면 타일 탐색 또는 송신측 비콘 프레임).
+    · 블러 1.3 + JPEG80, 모듈 6.5px: 4×v8(마스크) 심볼당 77~83% ≈ 1,050 B/프레임,
+      단일 v18 25~33% ≈ 300~390 B/프레임, 단일 v8 75% ≈ 250 B. 약한 손상(블러 0.7)에선 v18 ≈ 4×v8.
+    · 결론: 4×v8 이 큰 단일 심볼보다 견고. 대신 디코드 4배(폰 디코드 예산 → 표시 fps 3~5 권장),
+      송신 2×2 합성 + 패킷 flags 에 슬롯/레이아웃 기록 + 수신 다중 ROI·마스크·레이아웃 예측 필요. 미구현.
+[도구] tools/make_moving_y4m.py (움직이는 1080p y4m, DLL 사용), tools/e2e_edge.py (Playwright + 설치된 Edge).
+    분석용 스크립트(gen.py/analyze.js/trksim.js)는 세션 스크래치에만 있었음 — 필요 시 재작성.
+
+--------------------------------------------------------------------------------
+15. v2.0 — 4심볼(2×2) 병렬 출력 기본화 (2026-10-01)
+--------------------------------------------------------------------------------
+[프로토콜] PROTO_VERSION 1 유지 (예약돼 있던 flags 바이트 사용, 구버전 수신기도 패킷 파싱은 가능).
+    flags bit0-1 = 슬롯(0 좌상 1 우상 2 좌하 3 우하), bit2-3 = 배치(0 단일, 1 2×2 칸, 2 2×2 비콘).
+    2×2: 같은 버전 심볼 4개, 간격 GRID_GAP=8 모듈, 레이아웃 한 변 LW=2S+8. 프레임 f 칸 j seed=4f+j (수신 frame=seed>>2).
+    BEACON_EVERY=8 프레임마다 비콘 1장: 단일 심볼(seed 4f)을 레이아웃 영역(LW) 크기로 확대 표시
+    → 비콘 모듈 좌표 b ↔ 레이아웃 좌표 b·LW/S. 평균 3.625 패킷/프레임 (처리량 손실 9.4%).
+    송신 jabfountain.frame_jobs(frame, grid) 가 프레임별 (seed, flags) 목록을 정의 — tools/make_moving_y4m.py 도 사용.
+[송신] jab_sender: "병렬 심볼" 콤보(4개 2×2 기본 / 1개), fps 기본 6→5. framegen.make_frame(jobs) 가 심볼 목록 생성,
+    compose_frame 이 QImage 로 2×2 합성, CodeView.set_image(img, units) 는 units(레이아웃 모듈 수) 기준 정수 배율
+    (비콘은 S 픽셀 심볼을 LW 영역으로 최근접 확대). 시작 프레임 번호 랜덤 28비트. 첫 프레임 전 언더런은 세지 않음.
+[수신] jabcore.js: parsePacket 이 slot/layout 반환, solveH(n점 최소제곱, Hartley 정규화)/applyH/mul3/maskedCrop/
+    slotOrigin/FP_MOD 추가. index.html 이 jabcore.js 를 app.js 앞에서 로드(메인 스레드에서 JabCore 사용).
+    decode-worker 'multi': 레이아웃 크롭 + H(레이아웃→크롭) 받아 칸마다 (심볼+4모듈) 다각형 바깥 흰색(240) 마스크 →
+      decodeEx. 칸에서 얻은 FP(디코드 안 된 것은 예측 근처 0.2·FP간격 이내만)로 이번 프레임 H 즉시 갱신 → 다음 칸.
+      한 칸이라도 디코드되면, 현재 송신 프레임을 이미 받은 칸(slotFrame==curFrame)은 건너뜀(중복 절약, 탐침 1칸).
+      돌려주는 H 는 디코드(CRC 확인)된 칸 FP 로만 계산 — 검출만 된 FP 로 전역 갱신하면 이웃 FP 혼입 시 추적이
+      잘못된 위치로 굳는 문제가 있었음(수정). 아무 칸도 위치 못 찾으면 크롭 전체를 단일 디코드(비콘 프레임 대응).
+    app.js ML 상태: 단일 경로(ROI/탐색)에서 layout≠0 패킷 디코드 → mlFromSymbol(비콘: Hs·scale(S/LW), 칸: Hs·T(-원점))
+      → 이후 dispatch()가 sendMulti(레이아웃+여백 12모듈 크롭, 등속 예측 적용). 유지: 디코드 없는 1.5초 또는 10작업 연속 →
+      해제 후 단일 탐색(비콘을 다시 찾음). 세션 바뀌면 slotFrame 초기화. 칸 순서 = 현재 프레임 못 받은 칸 우선 + 회전.
+      추적 박스는 레이아웃 바깥 사각형을 applyQuad(기존 거부/속도 로직 공유)로 평활화하고, 칸별 사각형을 그려
+      최근 1초 디코드된 칸 초록/나머지 주황, 라벨 "✓ 수신 n/4". HUD "2×2 추적 n/4". window.__jabDbg={ML,ROI,TRK}.
+      동영상 파일 모드도 dispatch() 사용(2×2 지원) — 실제 동영상으로는 미검증.
+[검증] (Edge 가짜 카메라, 1080p, 움직이는 코드, 30KB K=92, 2×2 5fps / 단일 6fps)
+    · 코드 영역 화면 높이 55%(2×2 모듈 5.6px): 2×2 8.2~10.2초(4.2~4.7 KB/s) / 단일 16.2초(1.95 KB/s). 바이트 일치.
+    · 40%(모듈 4.1px): 2×2 10.2초(3.1~3.3 KB/s). 단 48프레임 반복 영상에서는 첫 바퀴에 못 읽은 패킷이 매 바퀴 똑같이
+      실패해 진행이 멈춘 듯 보였음 — 테스트 영상 한계(실제 송신은 매 프레임 새 패킷). 반복 없는 120프레임 영상으로 측정.
+    · 워커 단독(Node, acq 장면): 예측 오차 0~4모듈에서 칸 디코드 88~100%(블러 0.7), 블러 1.3+모듈 5px에서는 17~23%.
+    · 초기 포착 대안(비콘 없이 FP 슬롯 256가설 탐색)은 프레임당 8~50%, 멀거나 흐리면 1~2/12 → 비콘 방식 채택.
+    · 송신 GUI 헤드리스: 2×2/단일 모두 5fps 표시, 비콘 8프레임마다 확인.
+[미검증/주의] 실제 폰(특히 디코드 4배 부담 — 분석 fps 낮으면 송신 fps 3~4 권장), 실제 동영상 파일 모드 2×2,
+    export_frames.py 는 단일 프레임만. 2×2는 코드 영역이 카메라 화면 높이 ~40% 미만이면 단일보다 불리할 수 있음.
+[비콘 문의] 사용자가 "8프레임마다 1개만 나온다"고 보고 → 의도된 비콘이라고 설명, 유지/빈도↓/옵션화/제거 중 선택 대기.
+
+--------------------------------------------------------------------------------
+16. 수신 카메라 60fps 처리량 검토 (2026-10-02) — 결론: 지금은 이득 없음, 병목은 송신 fps 와 수신 디코드 CPU
+--------------------------------------------------------------------------------
+[모델] scratch fpsmodel.py (몬테카를로): 60Hz vsync 전환, 모니터 스캔 16.7ms, LCD 5ms, 카메라 노출/롤링읽기
+    30fps 10/25ms·60fps 8/14ms, 세로로 든 폰(롤링 ⟂ 모니터 스캔), 칸 깨끗 기준 한 프레임 비중 ≥85%, 현 스케줄 재현.
+    · CPU 무제한: 30fps 카메라는 송신 ~15fps까지 이론치(17 KB/s), 20fps 86%, 30fps 45%(16 KB/s).
+      60fps 카메라는 송신 30fps까지 ≈이론치(31 KB/s). → 카메라 fps 는 송신 15~20fps 이상에서만 병목.
+    · 데스크톱(워커4, 칸 디코드 45ms): 송신 10fps 이상에서 10~15 KB/s 로 CPU 한계, 60fps 이득 없음(동시 작업이 같은
+      송신 프레임에 몰려 중복 디코드 → 약간 손해). 폰 추정(워커3, 135ms): 송신 5fps 에서 이미 ~3.6 KB/s 로 CPU 한계.
+    · "작업당 1칸 + 진행 중 칸 제외" 스케줄도 비교했으나 현재 방식과 큰 차이 없음.
+[실측] Edge 가짜 카메라, 송신 15fps(이론 17.4 KB/s), 60KB, 6초 반복 영상(첫 바퀴 블록 증가 속도로 측정):
+    · 워커4: cam30 7.0~7.4 KB/s / cam60 3.5~8.6.  워커8: cam30 8.6~12.8 / cam60 0.5~10.6 → 60fps 개선 없음, CPU 한계 확인
+      (워커 4→8 에서 30fps 7→~11.5). 수신기 60fps 요청은 scratch 복사본에서만 시험 (프로젝트 app.js 는 30 그대로).
+    · 부수 발견: 송신 15fps 면 비콘이 67ms(카메라 2~4장)만 보여 초기 포착 실패가 잦음 — 12회 중 4회 10초 안에 첫 패킷 없음.
+      송신 fps 를 올리려면 비콘을 ~200ms 이상 유지하도록 바꿔야 함.
+[권장 순서] ① 디코드 처리량(고성능 기기 워커 자동 증설, 동시 작업 간 칸 중복 줄이기) ② 그에 맞춰 송신 fps 상향 + 비콘 노출
+    시간 고정 ③ 그다음 송신 15fps 이상일 때만 카메라 60fps 옵션 (기기별 getUserMedia 60fps 지원 차이, 노출 짧아 블러↓).
+[도구] make_moving_y4m.py 에 7번째 인자 카메라fps 추가 (가짜 카메라 영상은 전환 혼합·롤링셔터 없음 — 실제 30fps 는 더 불리).
+
+--------------------------------------------------------------------------------
+17. 최적 전송 설정 탐색 (2026-10-02) — 결론: 단일 · v16 · 8색 · ECC2 · 10fps (+수신 분석 크기 1400) 권장, 미적용
+--------------------------------------------------------------------------------
+[중요 발견] 제공 libjabcode.dll 은 16색 generateJABCode 가 데이터·버전·ECC 무관하게 항상 access violation(OSError)
+    → 사용자 요청으로 색 선택 자체를 제거, 8색 고정: jabcode_backend.COLOR_NUMBER = 8 을 송신 GUI·export_frames.py·
+    make_moving_y4m.py 가 사용 (--colors 옵션, JAB_COLORS 환경변수 삭제). 세션 ID 계산식은 그대로("8/버전/ECC/블록").
+    디코더도 드물게 특정 왜곡 입력에서
+    access violation (WASM 은 trap 시 워커 인스턴스 재생성으로 대응).
+    ECC 레벨 → LDPC (wc,wr): 1(3,8) 2(3,7) 3(4,9) 4(3,6) 5(4,7) 6(4,6) 7(3,4)… 데이터 비중 .63/.57/.56/.50/.43/.33/.25.
+    8색 블록(B): v8 e1~7 = 496/448/440/388/328/248/176, v16 e2 = 1316, v20 e1 = 2092. 4색 ≈ 8색의 63%.
+[1단계: 심볼 단위 실측] scratch optsweep.py (DLL 인코드·디코드, 14프로세스, 57k회 계획/조기종료). 카메라 모델: 원근 ±4%,
+    대비·감마·WB·채도↓·밝기 기울기, 가우시안 블러 0.8/1.3px, YUV 4:2:0, 노이즈 σ4. DLL 디코더 = WASM 판정 60/60 일치,
+    시간 WASM≈1.1×DLL. 색 4·8 × ECC1~7 × 버전(단일 6~20, 2×2 4~12, 3×3 3~8) × 코드크기 F 0.45/0.6/0.75.
+    → 8색이 모든 조건에서 4색보다 우세, ECC 1~3 이 우세(ECC5 는 용량 손실 대비 이득 없음).
+    디코드 시간: 성공은 이미지 크기·ECC 의존(낮은 ECC 가 오히려 빠름), LDPC 까지 가서 실패하면 ~300ms (비쌈).
+[2단계: 처리량 모델] scratch optmodel.py (+ optreport.py). 큰 단일 심볼(v16~20, ECC1)을 크게 과대평가함 — 실제 수신기의
+    ROI 크롭(FP간격×2.2)이 1000px 상한에 걸려 모듈이 6.7→5.1px로 축소되는 것, 큰 크롭 디코드 시간 등을 반영 못 함.
+[3단계: 실제 수신기 검증] Edge 가짜 카메라, 코드 60%, 120KB(현재 기본은 60KB), 첫 바퀴 고유 데이터 증가 속도(KB/s),
+    워커4=데스크톱, 워커1≈폰 디코드 예산:
+      A 현재 기본 2×2 v8 8색 ECC5 5fps ......... 5.1 / 3.1
+      C 단일 v16 8색 ECC2 10fps (분석 1000) ...... 11.7 / 5.2     분석 1400: 12.4 / 7.0  (이론 12.85 의 97%)
+      C1 단일 v16 ECC1 10fps (1000/1400) ........ 12.3 / 5.8  ·  13.3 / 6.8
+      C4 단일 v14 ECC2 10fps .................... 10.3 / 6.7
+      B 단일 v20 ECC1 10fps (1000/1400) ......... 10.3 / 2.2  ·  12.4 / 4.7   (인식률 33~55% — 크롭 축소)
+      E 단일 v20 ECC1 15fps ..................... 11.2 / 3.0
+      D 2×2 v7 ECC1 10fps ....................... 14.1 / (워커1: 비콘 100ms 라 12초간 포착 실패, 이후 8.6)
+      D4 2×2 v6 ECC2 10fps ...................... 10.6 / 5.6     D3 2×2 v7 ECC3 10fps: 9.1 / 3.8
+[권장] 단일 v16 8색 ECC2 10fps + 수신 분석 크기 1400 → 데스크톱 2.4배, 폰 수준 2.3배. 모듈이 2×2 v7보다 19% 커서 거리·블러에
+    강하고 프레임당 디코드 1회라 폰 CPU 에 유리, 비콘 불필요. ECC1 은 이상적 조건에서 약간 빠르나 여유 없음.
+    데스크톱 수신 최대치는 2×2 v7 ECC1 10fps(14 KB/s) 또는 단일 v16 12fps 이나 포착·전환 위험. fps 는 10 (폰은 디코드 한계,
+    15fps 는 전체 높이 심볼의 화면 전환 손실 큼 — 모델상 포착 ~57%). 실기기 미검증 — 폰에서 A/C 비교 권장.
+    사용자가 이전 요청으로 2×2 를 기본으로 정했으므로 기본값 변경은 사용자 확인 후.
+================================================================================
+
+--------------------------------------------------------------------------------
+18. 압축의 브라우저 호환성 검토 (2026-10-02) — 결론: 현행 zlib 은 모든 수신 가능 브라우저에서 동작 (실측), 개선안은 LZMA
+--------------------------------------------------------------------------------
+[현행] 송신 zlib -9 (5% 이상 줄 때만), 수신 jabcore.inflateZlib: DecompressionStream('deflate') → 없거나 실패하면
+    fflate.unzlibSync (fountain-worker 가 importScripts 로 로드, self.fflate). DecompressionStream 은 Chrome 80+/
+    Firefox 113+/Safari 16.4+ 뿐이지만, 대체 경로는 순수 JS 라 수신기 자체 최소 요건(WebAssembly·Worker·async →
+    iOS 11+/Chrome 57+ 수준)에서 모두 동작. 그동안 종단 테스트가 난수·zip 파일만 써서 압축 경로가 미검증이었음 →
+    Edge 실측: 204KB CSV(→43KB) 내장 API 경로 / worker 에서 DecompressionStream 을 지운 복사본(fflate 경로) 모두 바이트 일치.
+[알고리즘 비교] scratch corpus 13개(소스·한글문서·JSON·CSV·로그·DLL·EXE·BMP·JPG·PNG·PDF·zip, 7.7MB):
+    전체 합계 zlib-9 50% / bz2-9 49% / zstd-19·22 47% / xz·LZMA -9e 45% / brotli-11 45%.
+    압축되는 파일만 보면 zlib 대비 LZMA −25% (1.64MB→1.23MB; 로그 −51%, CSV −37%, BMP −32%, DLL −22%, JSON −19%),
+    zstd −11%. JPG·PNG·zip·PDF 는 모든 방식에서 이득 없음(무압축 유지). 송신 압축 시간: LZMA 2.6MB ≈1.2초, brotli-11 은 느림.
+[JS 디코더] DecompressionStream 없는 Node 에서 13개 전부 정확: fflate(zlib) 33KB 0.07초 / fzstd 8KB 0.09초 /
+    brotli 123KB(사전 포함, 번들링 필요) 0.18초 / LZMA-JS lzma-d-min.js 7KB 4.9초(DLL 2.6MB 1.7초 — 폰은 MB당 2~4초 추정,
+    전송 시간 대비 수 %). 모두 MIT.
+[개선안(미구현)] LZMA(alone 형식) 추가: 송신 Python 표준 lzma(FORMAT_ALONE, 9e)로 zlib 과 비교해 작은 쪽 선택,
+    컨테이너 flags bit0-1 = 0 무압축/1 zlib/2 LZMA (zlib 호환 유지, 구버전 수신기는 LZMA 파일에서 CRC 오류 → 수신기 먼저 배포),
+    수신 fountain-worker 에 lzma-d-min.js 추가(출력이 문자열/부호 있는 바이트 배열이라 Uint8Array 로 변환 필요).
+    zstd 는 Python 3.14 표준(compression.zstd)이지만 이득이 작고, brotli 는 pip 의존성·큰 디코더·느린 압축.
+
+--------------------------------------------------------------------------------
+19. v3.0 — 독립 심볼 4개 → JAB 다중 심볼 1개(2×2)로 교체 (2026-10-02)
+--------------------------------------------------------------------------------
+[배경] 18장 다음 검토: JAB 다중 심볼(createEncode(colors, 4), 위치 0·4·2·10 = 마스터 좌상 + 오른쪽·아래·오른쪽아래 슬레이브,
+    간격 없이 도킹, 슬레이브는 파인더 패턴 대신 정렬 패턴형 표시)이 독립 4개보다 유리: 코드 98×98 vs 106×106 모듈(모듈 8%↑),
+    용량 1470 vs 4×359, 패킷 헤더 1번(1440B vs 4×328B), 합성 측정 프레임 성공률도 높음. 제공 DLL 생성·WASM 디코드 모두 정상.
+[프로토콜] PROTO_VERSION 1 유지. flags bit2-3 = 배치(0 단일, 1 JAB 2×2 다중 심볼), 칸 번호·비콘 정의 삭제.
+    프레임당 패킷 1개, seed = 프레임 번호(단일과 동일). 세션 서명에 다중이면 '/m4' 추가(단일 세션 ID 는 기존과 같음).
+[송신] jabcode_backend: SINGLE=(0,), MULTI_2X2=(0,4,2,10); DllBackend/ExeBackend.generate(…, positions),
+    probe_capacity(…, positions) (EXE 폴백: --symbol-number 4 --symbol-position 0 4 2 10 --symbol-version ×8 --ecc-level ×4,
+    --symbol-number 를 먼저 줘야 함). framegen.make_frame(seed) — positions·flags 는 풀 초기화 인자. jab_sender: 병렬 심볼 콤보
+    (4 = JAB 다중 심볼 2×2 기본 / 1), compose_frame·비콘·CodeView.units 삭제(libjabcode 가 한 장으로 그림). fps 기본 5 유지.
+    jabfountain: frame_jobs/packets_per_frame/GRID_GAP/BEACON_EVERY 삭제, packet_flags(layout).
+[수신 v3.0] 15장의 ML 상태·sendMulti·decodeMulti(워커)·비콘·jabcore 기하 함수(solveH/maskedCrop 등) 삭제.
+    app.js codeQuad(): 마스터 geom(항상 g_syms[0]) 호모그래피로 코드 전체 (0,0)~(kS,kS) (다중 k=2) 계산 → 추적 박스(가운데 십자선)
+    와 ROI 에 사용. ROI: 다중은 코드 전체 × 1.35, 단일은 기존 FP 간격 × 2.2. S.multi 는 디코드된 패킷 flags 로 확정,
+    그 전(시작·정지 후)엔 다중으로 가정 — 마스터만 보고 단일 ROI 로 자르면 슬레이브가 잘려 geom 만 계속 들어와 ROI 가
+    고정되는 함정 방지. 단일로 알고 있는데 geom 은 있고 8번 연속 못 읽으면 다시 다중으로 가정(ROI.nodata).
+    HUD "추적 W×H · 2×2". window.__jabDbg = {ROI, TRK}.
+[검증] Edge 가짜 카메라 1080p 움직이는 코드, 코드 60%, 5fps, 60KB(K=42): 10초, 7.0~7.3 KB/s(이론 7.03), 워커1 6.7 KB/s,
+    바이트 일치. 이전 독립 4개는 같은 조건 4.8~5.4 / 2.0~3.1. 단일(v8 ECC5 5fps, 12KB) 회귀 1.58 KB/s(이론 1.6) 일치.
+    배포본 6.8~7.1 KB/s 일치. 송신 GUI 헤드리스: 98×98 프레임, 1440B/프레임, 생성 지연 0.
+[주의] 한 칸이라도 실패하면 그 프레임 전체 실패(NORMAL_DECODE). 실기기 미검증. export_frames.py 는 단일만.
+    17장 최적화(단일 v16 ECC2 10fps 권장)는 독립 2×2 기준 비교였음 — 다중 심볼 기준으로는 재측정 필요.
